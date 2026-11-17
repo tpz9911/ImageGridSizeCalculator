@@ -1,7 +1,7 @@
 ﻿<Window x:Class="ImageGridSizeCalculator.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="网格拼接图片尺寸计算器" Height="680" Width="500"
+        Title="Image Grid Size Calculator" Height="780" Width="550"
         WindowStartupLocation="CenterScreen"
         Background="#F4F6F9"
         FontFamily="Microsoft YaHei UI"
@@ -13,6 +13,7 @@
         <Style x:Key="RoundedTextBoxStyle" TargetType="TextBox">
             <Setter Property="Height" Value="38"/>
             <Setter Property="FontSize" Value="14"/>
+            <Setter Property="MaxLength" Value="7"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="Padding" Value="10,0"/>
             <Setter Property="BorderThickness" Value="1"/>
@@ -22,6 +23,9 @@
             <Setter Property="InputMethod.IsInputMethodEnabled" Value="False"/>
             <EventSetter Event="PreviewTextInput" Handler="OnNumberPreviewTextInput"/>
             <EventSetter Event="PreviewKeyDown" Handler="OnNumberPreviewKeyDown"/>
+            <EventSetter Event="GotKeyboardFocus" Handler="OnTextBoxGotKeyboardFocus"/>
+            <EventSetter Event="PreviewDragOver" Handler="OnNumberPreviewDragOver"/>
+            <EventSetter Event="PreviewDrop" Handler="OnNumberPreviewDrop"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
@@ -59,8 +63,26 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="24">
-        <Border Background="#FFFFFF" CornerRadius="12" Padding="24">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 界面右上角：窗口置顶 -->
+        <CheckBox x:Name="ChkTopmost"
+                  Grid.Row="0"
+                  HorizontalAlignment="Right"
+                  VerticalAlignment="Center"
+                  Margin="0,0,4,8"
+                  FontSize="12"
+                  Foreground="#606266"
+                  Cursor="Hand"
+                  IsChecked="{Binding Topmost, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay}">
+            <TextBlock Text="窗口置顶（On Top）" VerticalAlignment="Center"/>
+        </CheckBox>
+
+        <Border Grid.Row="1" Background="#FFFFFF" CornerRadius="12" Padding="24">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="20" ShadowDepth="2" Opacity="0.06" Color="#000000"/>
             </Border.Effect>
@@ -74,7 +96,9 @@
                 <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <TextBlock Text="网格拼接图片尺寸计算器" FontSize="20" FontWeight="Bold" Foreground="#303133" HorizontalAlignment="Center"/>
-                        <TextBlock Text="配置网格矩阵、间距及外边框参数，快速计算成品图宽高" FontSize="12" Foreground="#909399" HorizontalAlignment="Center" Margin="0,4,0,20"/>
+                        <TextBlock Text="Image Grid Size Calculator" FontSize="12" FontWeight="SemiBold" Foreground="#606266" HorizontalAlignment="Center" Margin="0,2,0,6"/>
+                        <TextBlock Text="配置网格矩阵、间距及外边框参数，计算成品图宽高。尺寸单位：像素。" FontSize="12" Foreground="#909399" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+                        <TextBlock Text="Configure grid matrix, spacing, and outer border to calculate final image size (in px)." FontSize="11" Foreground="#A8ABB2" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,2,0,20"/>
 
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -86,38 +110,64 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <!-- 素材宽高 -->
-                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,14">
-                                <TextBlock Text="素材宽度 (px)" Style="{StaticResource FieldLabelStyle}"/>
+                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,8">
+                                <TextBlock Text="素材宽度 (Source Width)" Style="{StaticResource FieldLabelStyle}"/>
                                 <TextBox x:Name="TxtSourceWidth" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
 
-                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,14">
-                                <TextBlock Text="素材高度 (px)" Style="{StaticResource FieldLabelStyle}"/>
+                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,8">
+                                <TextBlock Text="素材高度 (Source Height)" Style="{StaticResource FieldLabelStyle}"/>
                                 <TextBox x:Name="TxtSourceHeight" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
 
+                            <!-- 新增：素材宽高比、标准比例与总像素实时信息 -->
+                            <Grid Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Margin="2,0,0,14">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,3">
+                                    <TextBlock Text="宽高比（Aspect Ratio）：" FontSize="12" Foreground="#909399"/>
+                                    <TextBlock x:Name="LblSourceAspectRatio" Text="--" FontSize="12" Foreground="#909399"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,3">
+                                    <TextBlock Text="对应标准比例（Standard Ratio）：" FontSize="12" Foreground="#909399"/>
+                                    <TextBlock x:Name="LblSourceStandardRatio" Text="--" FontSize="12" Foreground="#909399"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="2" Orientation="Horizontal">
+                                    <TextBlock Text="总像素（Total Pixels）：" FontSize="12" Foreground="#909399"/>
+                                    <TextBlock x:Name="LblSourceTotalPixels" Text="--" FontSize="12" Foreground="#909399"/>
+                                    <TextBlock Text=" 百万像素（MP）" FontSize="12" Foreground="#909399"/>
+                                </StackPanel>
+                            </Grid>
+
                             <!-- 矩阵行列 -->
-                            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,14">
+                            <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,0,14">
                                 <TextBlock Text="矩阵列数 (Columns)" Style="{StaticResource FieldLabelStyle}"/>
                                 <TextBox x:Name="TxtMatrixColumns" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
 
-                            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,14">
+                            <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,0,0,14">
                                 <TextBlock Text="矩阵行数 (Rows)" Style="{StaticResource FieldLabelStyle}"/>
                                 <TextBox x:Name="TxtMatrixRows" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
 
                             <!-- 水平与垂直间距 -->
-                            <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,0,16">
-                                <TextBlock Text="水平间距 (px)" Style="{StaticResource FieldLabelStyle}"/>
+                            <StackPanel Grid.Row="3" Grid.Column="0" Margin="0,0,0,16">
+                                <TextBlock Text="水平间距 (Horizontal Spacing)" Style="{StaticResource FieldLabelStyle}"/>
                                 <TextBox x:Name="TxtHorizontalSpacing" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
 
-                            <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,0,0,16">
-                                <TextBlock Text="垂直间距 (px)" Style="{StaticResource FieldLabelStyle}"/>
+                            <StackPanel Grid.Row="3" Grid.Column="2" Margin="0,0,0,16">
+                                <TextBlock Text="垂直间距 (Vertical Spacing)" Style="{StaticResource FieldLabelStyle}"/>
                                 <TextBox x:Name="TxtVerticalSpacing" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
                         </Grid>
@@ -132,7 +182,7 @@
 
                                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                                     <CheckBox x:Name="ChkEnableBorder" VerticalAlignment="Center" Checked="OnBorderCheckChanged" Unchecked="OnBorderCheckChanged"/>
-                                    <TextBlock Text="外边框宽度(px)" FontSize="13" Foreground="#606266" VerticalAlignment="Center" Margin="8,0,12,0"/>
+                                    <TextBlock Text="外边框宽度 (Border Width)" FontSize="13" Foreground="#606266" VerticalAlignment="Center" Margin="8,0,12,0"/>
                                 </StackPanel>
 
                                 <TextBox x:Name="TxtBorderWidth" Grid.Column="1"
@@ -145,7 +195,10 @@
                         <!-- 结果展示 -->
                         <Border Background="#F0F7FF" BorderBrush="#D0E5FF" BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,12">
                             <StackPanel>
-                                <TextBlock Text="计算结果" FontSize="14" FontWeight="SemiBold" Foreground="#1D6ED8" Margin="0,0,0,8"/>
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="计算结果 (Result)" FontSize="14" FontWeight="SemiBold" Foreground="#1D6ED8" HorizontalAlignment="Left"/>
+                                    <TextBlock x:Name="LblCopyHint" Text="点击数值可复制 (Click to Copy)" FontSize="11" Foreground="#909399" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                </Grid>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -154,14 +207,27 @@
 
                                     <StackPanel Grid.Column="0">
                                         <TextBlock Text="总宽度 (targetWidth)" FontSize="12" Foreground="#6682A3"/>
-                                        <TextBlock x:Name="LblTargetWidth" Text="--" FontSize="20" FontWeight="Bold" Foreground="#0F4BB8" Margin="0,4,0,0"/>
+                                        <TextBlock x:Name="LblTargetWidth" Text="--" FontSize="20" FontWeight="Bold" Foreground="#0F4BB8"
+                                                   Margin="0,4,0,0" Padding="0,2" Background="Transparent"
+                                                   Cursor="Hand" ToolTip="点击复制宽度数值"
+                                                   MouseLeftButtonUp="OnResultValueClick"/>
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="1">
                                         <TextBlock Text="总高度 (targetHeight)" FontSize="12" Foreground="#6682A3"/>
-                                        <TextBlock x:Name="LblTargetHeight" Text="--" FontSize="20" FontWeight="Bold" Foreground="#0F4BB8" Margin="0,4,0,0"/>
+                                        <TextBlock x:Name="LblTargetHeight" Text="--" FontSize="20" FontWeight="Bold" Foreground="#0F4BB8"
+                                                   Margin="0,4,0,0" Padding="0,2" Background="Transparent"
+                                                   Cursor="Hand" ToolTip="点击复制高度数值"
+                                                   MouseLeftButtonUp="OnResultValueClick"/>
                                     </StackPanel>
                                 </Grid>
+
+                                <!-- 新增：结果图片总像素信息 -->
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <TextBlock Text="总像素（Total Pixels）：" FontSize="12" Foreground="#909399"/>
+                                    <TextBlock x:Name="LblTargetTotalPixels" Text="--" FontSize="12" Foreground="#909399"/>
+                                    <TextBlock Text=" 百万像素（MP）" FontSize="12" Foreground="#909399"/>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -170,11 +236,11 @@
                 </ScrollViewer>
 
                 <!-- 最下方靠左：作者与版本信息 -->
-                <TextBlock Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,12,0,0" FontSize="12">
+                <TextBlock Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,12,20,0" FontSize="12">
                     <Hyperlink NavigateUri="https://github.com/tpz9911"
                                RequestNavigate="Hyperlink_RequestNavigate"
                                ToolTip="点击访问作者主页">
-                        PZ v0.99.260922
+                        PZ v1.00.261116
                     </Hyperlink>
                 </TextBlock>
             </Grid>

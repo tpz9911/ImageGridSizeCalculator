@@ -1,20 +1,27 @@
-﻿using System;
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Navigation;
+using System.Windows.Threading;
 
 namespace ImageGridSizeCalculator
 {
     public partial class MainWindow : Window
     {
-        private static readonly Regex NonDigitRegex = new Regex(@"[^\d]+", RegexOptions.Compiled);
-        private readonly string _configFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "igsc_config.json");
+        // 仅允许 ASCII 半角数字（排除全角数字等其他 Unicode 数字字符）
+        private static readonly Regex NonDigitRegex = new(@"[^0-9]+", RegexOptions.Compiled);
+        private readonly string _configFilePath = Path.Combine(AppContext.BaseDirectory, "igsc_config.json");
+
+        private long? _currentTargetWidth;
+        private long? _currentTargetHeight;
+        private DispatcherTimer? _copyHintTimer;
 
         public MainWindow()
         {
@@ -26,9 +33,12 @@ namespace ImageGridSizeCalculator
 
         #region 配置读写 (igsc_config.json)
 
+        /// <summary>
+        /// 从本地 JSON 文件加载用户上次保存的参数，异常或缺失字段时自动回退默认值。
+        /// </summary>
         private void LoadConfiguration()
         {
-            AppConfig config = null;
+            AppConfig? config = null;
 
             try
             {
@@ -44,19 +54,24 @@ namespace ImageGridSizeCalculator
                 config = null;
             }
 
-            // 若文件不存在或反序列化失败，使用默认配置
-            config ??= new AppConfig();
+            var defaultConfig = new AppConfig();
+            config ??= defaultConfig;
 
-            TxtSourceWidth.Text = config.SourceWidth;
-            TxtSourceHeight.Text = config.SourceHeight;
-            TxtMatrixColumns.Text = config.MatrixColumns;
-            TxtMatrixRows.Text = config.MatrixRows;
-            TxtHorizontalSpacing.Text = config.HorizontalSpacing;
-            TxtVerticalSpacing.Text = config.VerticalSpacing;
+            // 对每个字符串配置项进行 null 兜底，防止配置文件被手动改坏
+            TxtSourceWidth.Text = config.SourceWidth ?? defaultConfig.SourceWidth;
+            TxtSourceHeight.Text = config.SourceHeight ?? defaultConfig.SourceHeight;
+            TxtMatrixColumns.Text = config.MatrixColumns ?? defaultConfig.MatrixColumns;
+            TxtMatrixRows.Text = config.MatrixRows ?? defaultConfig.MatrixRows;
+            TxtHorizontalSpacing.Text = config.HorizontalSpacing ?? defaultConfig.HorizontalSpacing;
+            TxtVerticalSpacing.Text = config.VerticalSpacing ?? defaultConfig.VerticalSpacing;
             ChkEnableBorder.IsChecked = config.EnableBorder;
-            TxtBorderWidth.Text = config.BorderWidth;
+            TxtBorderWidth.Text = config.BorderWidth ?? defaultConfig.BorderWidth;
+            Topmost = config.Topmost;
         }
 
+        /// <summary>
+        /// 将当前界面参数持久化保存到本地 JSON 文件。
+        /// </summary>
         private void SaveConfiguration()
         {
             try
@@ -70,7 +85,8 @@ namespace ImageGridSizeCalculator
                     HorizontalSpacing = TxtHorizontalSpacing.Text,
                     VerticalSpacing = TxtVerticalSpacing.Text,
                     EnableBorder = ChkEnableBorder.IsChecked == true,
-                    BorderWidth = TxtBorderWidth.Text
+                    BorderWidth = TxtBorderWidth.Text,
+                    Topmost = Topmost
                 };
 
                 var options = new JsonSerializerOptions { WriteIndented = true };
@@ -90,11 +106,15 @@ namespace ImageGridSizeCalculator
 
         #endregion
 
-        #region 数字输入约束
+        #region 数字输入约束与焦点交互
 
+        /// <summary>
+        /// 为所有数字输入框注册粘贴拦截事件。
+        /// </summary>
         private void RegisterPastingValidation()
         {
-            TextBox[] textBoxes = [
+            TextBox[] textBoxes =
+            [
                 TxtSourceWidth,
                 TxtSourceHeight,
                 TxtMatrixColumns,
@@ -113,6 +133,14 @@ namespace ImageGridSizeCalculator
             }
         }
 
+        private void OnTextBoxGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+        {
+            if (sender is TextBox textBox)
+            {
+                textBox.SelectAll();
+            }
+        }
+
         private void OnNumberPreviewTextInput(object sender, TextCompositionEventArgs e)
         {
             e.Handled = NonDigitRegex.IsMatch(e.Text);
@@ -126,11 +154,14 @@ namespace ImageGridSizeCalculator
             }
         }
 
+        /// <summary>
+        /// 拦截粘贴操作，仅允许粘贴非空且纯 ASCII 数字的文本。
+        /// </summary>
         private void OnTextBoxPasting(object sender, DataObjectPastingEventArgs e)
         {
             if (e.DataObject.GetDataPresent(typeof(string)))
             {
-                string text = (string)e.DataObject.GetData(typeof(string));
+                string? text = e.DataObject.GetData(typeof(string)) as string;
                 if (string.IsNullOrEmpty(text) || NonDigitRegex.IsMatch(text))
                 {
                     e.CancelCommand();
@@ -142,9 +173,49 @@ namespace ImageGridSizeCalculator
             }
         }
 
+        /// <summary>
+        /// 拖拽悬停校验：禁止拖入非纯数字文本。
+        /// </summary>
+        private void OnNumberPreviewDragOver(object sender, DragEventArgs e)
+        {
+            if (!IsValidNumericDragData(e.Data))
+            {
+                e.Effects = DragDropEffects.None;
+                e.Handled = true;
+            }
+        }
+
+        /// <summary>
+        /// 拖拽放下校验：兜底拦截非纯数字文本的拖入。
+        /// </summary>
+        private void OnNumberPreviewDrop(object sender, DragEventArgs e)
+        {
+            if (!IsValidNumericDragData(e.Data))
+            {
+                e.Handled = true;
+            }
+        }
+
+        private static bool IsValidNumericDragData(IDataObject dataObject)
+        {
+            if (dataObject.GetDataPresent(DataFormats.UnicodeText))
+            {
+                string? text = dataObject.GetData(DataFormats.UnicodeText) as string;
+                return !string.IsNullOrEmpty(text) && !NonDigitRegex.IsMatch(text);
+            }
+
+            if (dataObject.GetDataPresent(DataFormats.Text))
+            {
+                string? text = dataObject.GetData(DataFormats.Text) as string;
+                return !string.IsNullOrEmpty(text) && !NonDigitRegex.IsMatch(text);
+            }
+
+            return false;
+        }
+
         #endregion
 
-        #region 计算逻辑
+        #region 计算逻辑与结果复制
 
         private void OnInputChanged(object sender, TextChangedEventArgs e)
         {
@@ -162,54 +233,284 @@ namespace ImageGridSizeCalculator
             }
         }
 
+        /// <summary>
+        /// 校验输入参数并实时计算素材信息、成品图宽高及总像素。
+        /// </summary>
         private void Calculate()
         {
             if (TxtSourceWidth == null || TxtSourceHeight == null ||
                 TxtMatrixColumns == null || TxtMatrixRows == null ||
                 TxtHorizontalSpacing == null || TxtVerticalSpacing == null ||
-                TxtBorderWidth == null || ChkEnableBorder == null)
+                TxtBorderWidth == null || ChkEnableBorder == null ||
+                LblSourceAspectRatio == null || LblSourceStandardRatio == null ||
+                LblSourceTotalPixels == null || LblTargetTotalPixels == null)
             {
                 return;
             }
 
-            bool valid = true;
-            valid &= int.TryParse(TxtSourceWidth.Text.Trim(), out int sourceWidth) && sourceWidth > 0;
-            valid &= int.TryParse(TxtSourceHeight.Text.Trim(), out int sourceHeight) && sourceHeight > 0;
-            valid &= int.TryParse(TxtMatrixColumns.Text.Trim(), out int matrixColumns) && matrixColumns > 0;
-            valid &= int.TryParse(TxtMatrixRows.Text.Trim(), out int matrixRows) && matrixRows > 0;
-            valid &= int.TryParse(TxtHorizontalSpacing.Text.Trim(), out int horizontalSpacing) && horizontalSpacing >= 0;
-            valid &= int.TryParse(TxtVerticalSpacing.Text.Trim(), out int verticalSpacing) && verticalSpacing >= 0;
+            string sourceWidthText = TxtSourceWidth.Text.Trim();
+            string sourceHeightText = TxtSourceHeight.Text.Trim();
+            string columnsText = TxtMatrixColumns.Text.Trim();
+            string rowsText = TxtMatrixRows.Text.Trim();
+            string hSpacingText = TxtHorizontalSpacing.Text.Trim();
+            string vSpacingText = TxtVerticalSpacing.Text.Trim();
+            string borderText = TxtBorderWidth.Text.Trim();
 
-            int borderWidth = 0;
-            if (ChkEnableBorder.IsChecked == true)
+            // 1. 实时计算素材宽高比、标准比例与总像素
+            int sourceWidth = 0;
+            int sourceHeight = 0;
+            bool isSourceWidthEmpty = string.IsNullOrEmpty(sourceWidthText);
+            bool isSourceHeightEmpty = string.IsNullOrEmpty(sourceHeightText);
+            bool isSourceWidthValid = !isSourceWidthEmpty && int.TryParse(sourceWidthText, out sourceWidth) && sourceWidth > 0;
+            bool isSourceHeightValid = !isSourceHeightEmpty && int.TryParse(sourceHeightText, out sourceHeight) && sourceHeight > 0;
+
+            if ((!isSourceWidthEmpty && !isSourceWidthValid) || (!isSourceHeightEmpty && !isSourceHeightValid))
             {
-                valid &= int.TryParse(TxtBorderWidth.Text.Trim(), out borderWidth) && borderWidth >= 0;
+                // 存在不合法输入 -> 红色 ERR
+                SetInfoText(LblSourceAspectRatio, "ERR", ErrorTextBrush);
+                SetInfoText(LblSourceStandardRatio, "ERR", ErrorTextBrush);
+                SetInfoText(LblSourceTotalPixels, "ERR", ErrorTextBrush);
+            }
+            else if (isSourceWidthEmpty || isSourceHeightEmpty)
+            {
+                // 宽或高空缺 -> 灰色 --
+                SetInfoText(LblSourceAspectRatio, "--", GrayTextBrush);
+                SetInfoText(LblSourceStandardRatio, "--", GrayTextBrush);
+                SetInfoText(LblSourceTotalPixels, "--", GrayTextBrush);
+            }
+            else
+            {
+                double aspectRatio = (double)sourceWidth / sourceHeight;
+                SetInfoText(LblSourceAspectRatio, aspectRatio.ToString("F4"), NormalInfoBrush);
+
+                string? matchedRatioText = MatchStandardAspectRatio(sourceWidth, sourceHeight, aspectRatio);
+                if (matchedRatioText != null)
+                {
+                    SetInfoText(LblSourceStandardRatio, matchedRatioText, NormalInfoBrush);
+                }
+                else
+                {
+                    SetInfoText(LblSourceStandardRatio, "--", GrayTextBrush);
+                }
+
+                double sourceMegapixels = (double)sourceWidth * sourceHeight / 1_000_000.0;
+                SetInfoText(LblSourceTotalPixels, sourceMegapixels.ToString("F3"), NormalInfoBrush);
             }
 
-            if (!valid)
+            // 2. 校验其余网格与边框参数
+            bool isBorderEnabled = ChkEnableBorder.IsChecked == true;
+
+            bool isColumnsEmpty = string.IsNullOrEmpty(columnsText);
+            bool isRowsEmpty = string.IsNullOrEmpty(rowsText);
+            bool isHSpacingEmpty = string.IsNullOrEmpty(hSpacingText);
+            bool isVSpacingEmpty = string.IsNullOrEmpty(vSpacingText);
+            bool isBorderEmpty = string.IsNullOrEmpty(borderText);
+
+            int matrixColumns = 0;
+            int matrixRows = 0;
+            int horizontalSpacing = 0;
+            int verticalSpacing = 0;
+            int borderWidth = 0;
+
+            bool isColumnsValid = !isColumnsEmpty && int.TryParse(columnsText, out matrixColumns) && matrixColumns > 0;
+            bool isRowsValid = !isRowsEmpty && int.TryParse(rowsText, out matrixRows) && matrixRows > 0;
+            bool isHSpacingValid = !isHSpacingEmpty && int.TryParse(hSpacingText, out horizontalSpacing) && horizontalSpacing >= 0;
+            bool isVSpacingValid = !isVSpacingEmpty && int.TryParse(vSpacingText, out verticalSpacing) && verticalSpacing >= 0;
+            bool isBorderValid = !isBorderEnabled || (!isBorderEmpty && int.TryParse(borderText, out borderWidth) && borderWidth >= 0);
+
+            bool allValid = isSourceWidthValid && isSourceHeightValid &&
+                            isColumnsValid && isRowsValid &&
+                            isHSpacingValid && isVSpacingValid &&
+                            isBorderValid;
+
+            // 判断所有非空输入项中是否存在非法值
+            bool hasInvalidNonEmptyInput =
+                (!isSourceWidthEmpty && !isSourceWidthValid) ||
+                (!isSourceHeightEmpty && !isSourceHeightValid) ||
+                (!isColumnsEmpty && !isColumnsValid) ||
+                (!isRowsEmpty && !isRowsValid) ||
+                (!isHSpacingEmpty && !isHSpacingValid) ||
+                (!isVSpacingEmpty && !isVSpacingValid) ||
+                (isBorderEnabled && !isBorderEmpty && !isBorderValid);
+
+            if (!allValid)
             {
-                LblTargetWidth.Text = "--";
-                LblTargetHeight.Text = "--";
-                LblStatus.Text = "请输入有效的正整数尺寸与非负间距/边框值";
-                LblStatus.Visibility = Visibility.Visible;
+                ResetTargetResult(
+                    showError: hasInvalidNonEmptyInput,
+                    statusMessage: "请输入有效的正整数尺寸与非负间距/边框值");
+                return;
+            }
+
+            // 3. 计算成品图尺寸（使用 checked 防止极端大数导致 long 静默溢出）
+            long targetWidth;
+            long targetHeight;
+            try
+            {
+                checked
+                {
+                    targetWidth = (long)sourceWidth * matrixColumns + (long)(matrixColumns - 1) * horizontalSpacing;
+                    targetHeight = (long)sourceHeight * matrixRows + (long)(matrixRows - 1) * verticalSpacing;
+
+                    if (isBorderEnabled)
+                    {
+                        targetWidth += (long)borderWidth * 2;
+                        targetHeight += (long)borderWidth * 2;
+                    }
+                }
+            }
+            catch (OverflowException)
+            {
+                ResetTargetResult(
+                    showError: true,
+                    statusMessage: "计算结果超出数值范围，请减小输入参数");
                 return;
             }
 
             LblStatus.Visibility = Visibility.Collapsed;
-
-            // 基础网格拼接尺寸
-            long targetWidth = (long)sourceWidth * matrixColumns + (long)(matrixColumns - 1) * horizontalSpacing;
-            long targetHeight = (long)sourceHeight * matrixRows + (long)(matrixRows - 1) * verticalSpacing;
-
-            // 计入外边框（上下、左右各2倍）
-            if (ChkEnableBorder.IsChecked == true)
-            {
-                targetWidth += (long)borderWidth * 2;
-                targetHeight += (long)borderWidth * 2;
-            }
+            _currentTargetWidth = targetWidth;
+            _currentTargetHeight = targetHeight;
 
             LblTargetWidth.Text = $"{targetWidth:N0} px";
             LblTargetHeight.Text = $"{targetHeight:N0} px";
+
+            double targetMegapixels = (double)targetWidth * targetHeight / 1_000_000.0;
+            SetInfoText(LblTargetTotalPixels, targetMegapixels.ToString("F3"), NormalInfoBrush);
+        }
+
+        private void ResetTargetResult(bool showError, string statusMessage)
+        {
+            _currentTargetWidth = null;
+            _currentTargetHeight = null;
+            LblTargetWidth.Text = "--";
+            LblTargetHeight.Text = "--";
+
+            if (showError)
+            {
+                SetInfoText(LblTargetTotalPixels, "ERR", ErrorTextBrush);
+            }
+            else
+            {
+                SetInfoText(LblTargetTotalPixels, "--", GrayTextBrush);
+            }
+
+            LblStatus.Text = statusMessage;
+            LblStatus.Visibility = Visibility.Visible;
+        }
+
+        /// <summary>
+        /// 匹配最接近的常见标准宽高比并计算像素误差。
+        /// </summary>
+        private static string? MatchStandardAspectRatio(int width, int height, double aspectRatio)
+        {
+            StandardAspectRatio bestMatch = StandardAspectRatios[0];
+            double minRatioDiff = double.MaxValue;
+
+            foreach (var item in StandardAspectRatios)
+            {
+                double diff = Math.Abs(aspectRatio - item.Ratio);
+                if (diff < minRatioDiff)
+                {
+                    minRatioDiff = diff;
+                    bestMatch = item;
+                }
+            }
+
+            double expectedHeight = width / bestMatch.Ratio;
+            double absHeightDiff = Math.Abs(height - expectedHeight);
+            double relativeError = absHeightDiff / expectedHeight;
+
+            // 相对误差 <= 0.1% 或 绝对差值 <= 1 px
+            if (relativeError > 0.001 && absHeightDiff > 1.0)
+            {
+                return null;
+            }
+
+            long roundedExpectedHeight = (long)Math.Round(expectedHeight, MidpointRounding.AwayFromZero);
+            long pixelDiff = height - roundedExpectedHeight;
+            string diffStr = pixelDiff >= 0 ? $"+{pixelDiff}" : pixelDiff.ToString();
+
+            return $"{bestMatch.Name} ({diffStr})";
+        }
+
+        private static void SetInfoText(TextBlock target, string text, Brush foreground)
+        {
+            target.Text = text;
+            target.Foreground = foreground;
+        }
+
+        private void OnResultValueClick(object sender, MouseButtonEventArgs e)
+        {
+            long? valueToCopy = null;
+            if (sender == LblTargetWidth)
+            {
+                valueToCopy = _currentTargetWidth;
+            }
+            else if (sender == LblTargetHeight)
+            {
+                valueToCopy = _currentTargetHeight;
+            }
+
+            if (valueToCopy == null)
+            {
+                return;
+            }
+
+            string text = valueToCopy.Value.ToString();
+            try
+            {
+                TrySetClipboardText(text);
+                ShowCopySuccessHint(text);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"复制到剪贴板失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// 写入剪贴板并附带重试机制，缓解其他程序短暂占用剪贴板导致的 COMException。
+        /// </summary>
+        private static void TrySetClipboardText(string text)
+        {
+            const int maxRetries = 3;
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    Clipboard.SetDataObject(text, true);
+                    return;
+                }
+                catch (COMException) when (attempt < maxRetries - 1)
+                {
+                    Thread.Sleep(30);
+                }
+            }
+        }
+
+        private void ShowCopySuccessHint(string copiedText)
+        {
+            LblCopyHint.Text = $"✓ {copiedText}";
+            LblCopyHint.Foreground = SuccessHintBrush;
+
+            if (_copyHintTimer == null)
+            {
+                _copyHintTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(1.5)
+                };
+                _copyHintTimer.Tick += (_, _) =>
+                {
+                    _copyHintTimer.Stop();
+                    LblCopyHint.Text = "点击数值可复制 (Click to Copy)";
+                    LblCopyHint.Foreground = GrayTextBrush;
+                };
+            }
+            else
+            {
+                _copyHintTimer.Stop();
+            }
+
+            _copyHintTimer.Start();
         }
 
         #endregion
@@ -235,5 +536,39 @@ namespace ImageGridSizeCalculator
         }
 
         #endregion
+
+        private readonly record struct StandardAspectRatio(string Name, double Ratio);
+
+        private static readonly StandardAspectRatio[] StandardAspectRatios =
+        [
+            new("1:1", 1.0),
+            new("5:4", 5.0 / 4.0),
+            new("4:5", 4.0 / 5.0),
+            new("4:3", 4.0 / 3.0),
+            new("3:4", 3.0 / 4.0),
+            new("3:2", 3.0 / 2.0),
+            new("2:3", 2.0 / 3.0),
+            new("16:10", 16.0 / 10.0),
+            new("10:16", 10.0 / 16.0),
+            new("16:9", 16.0 / 9.0),
+            new("9:16", 9.0 / 16.0),
+            new("21:9", 21.0 / 9.0),
+            new("9:21", 9.0 / 21.0)
+        ];
+
+        /// <summary>
+        /// 创建并冻结不可变画刷，减少 UI 渲染与内存分配开销。
+        /// </summary>
+        private static SolidColorBrush CreateFrozenBrush(string hexColor)
+        {
+            var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hexColor));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static readonly Brush GrayTextBrush = CreateFrozenBrush("#909399");
+        private static readonly Brush NormalInfoBrush = CreateFrozenBrush("#606266");
+        private static readonly Brush ErrorTextBrush = CreateFrozenBrush("#F56C6C");
+        private static readonly Brush SuccessHintBrush = CreateFrozenBrush("#67C23A");
     }
 }

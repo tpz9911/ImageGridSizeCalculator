@@ -10,5 +10,6 @@
         public string VerticalSpacing { get; set; } = "10";
         public bool EnableBorder { get; set; } = false;
         public string BorderWidth { get; set; } = "20";
+        public bool Topmost { get; set; } = false;
     }
 }
