@@ -124,29 +124,81 @@
                                 <TextBox x:Name="TxtSourceHeight" Style="{StaticResource RoundedTextBoxStyle}" TextChanged="OnInputChanged"/>
                             </StackPanel>
 
-                            <!-- 新增：素材宽高比、标准比例与总像素实时信息 -->
+                            <!-- 素材宽高比、标准比例与总像素实时信息 -->
                             <Grid Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Margin="2,0,0,14">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
 
-                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,3">
-                                    <TextBlock Text="宽高比（Aspect Ratio）：" FontSize="12" Foreground="#909399"/>
-                                    <TextBlock x:Name="LblSourceAspectRatio" Text="--" FontSize="12" Foreground="#909399"/>
-                                </StackPanel>
+                                <!-- 左列：三行实时信息 -->
+                                <Grid Grid.Column="0" VerticalAlignment="Center">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
 
-                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,3">
-                                    <TextBlock Text="对应标准比例（Standard Ratio）：" FontSize="12" Foreground="#909399"/>
-                                    <TextBlock x:Name="LblSourceStandardRatio" Text="--" FontSize="12" Foreground="#909399"/>
-                                </StackPanel>
+                                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,3">
+                                        <TextBlock Text="宽高比（Aspect Ratio）：" FontSize="12" Foreground="#909399"/>
+                                        <TextBlock x:Name="LblSourceAspectRatio" Text="--" FontSize="12" Foreground="#909399"/>
+                                    </StackPanel>
 
-                                <StackPanel Grid.Row="2" Orientation="Horizontal">
-                                    <TextBlock Text="总像素（Total Pixels）：" FontSize="12" Foreground="#909399"/>
-                                    <TextBlock x:Name="LblSourceTotalPixels" Text="--" FontSize="12" Foreground="#909399"/>
-                                    <TextBlock Text=" 百万像素（MP）" FontSize="12" Foreground="#909399"/>
-                                </StackPanel>
+                                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,3">
+                                        <TextBlock Text="对应标准比例（Standard Ratio）：" FontSize="12" Foreground="#909399"/>
+                                        <TextBlock x:Name="LblSourceStandardRatio" Text="--" FontSize="12" Foreground="#909399"/>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Row="2" Orientation="Horizontal">
+                                        <TextBlock Text="总像素（Total Pixels）：" FontSize="12" Foreground="#909399"/>
+                                        <TextBlock x:Name="LblSourceTotalPixels" Text="--" FontSize="12" Foreground="#909399"/>
+                                        <TextBlock Text=" 百万像素（MP）" FontSize="12" Foreground="#909399"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- 右列：1:1 逻辑外框，实时绘制素材宽高比矢量矩形 -->
+                                <Grid Grid.Column="1"
+                                      Width="54"
+                                      Height="54"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Background="Transparent"
+                                      SnapsToDevicePixels="True">
+                                    <!-- 正常比例矩形 -->
+                                    <Rectangle x:Name="PreviewAspectRect"
+                                               StrokeThickness="1.5"
+                                               Fill="Transparent"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Visibility="Collapsed"/>
+
+                                    <!-- 无效输入或比例超限时的错误提示图形 -->
+                                    <Grid x:Name="PreviewErrorShape"
+                                          Width="27"
+                                          Height="27"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Visibility="Collapsed">
+                                        <Ellipse x:Name="PreviewErrorCircle"
+                                                 Width="27"
+                                                 Height="27"
+                                                 Stroke="#F56C6C"
+                                                 StrokeThickness="1.5"
+                                                 Fill="Transparent"/>
+                                        <Line x:Name="PreviewErrorLine1"
+                                              X1="6" Y1="6" X2="21" Y2="21"
+                                              Stroke="#F56C6C"
+                                              StrokeThickness="1.5"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"/>
+                                        <Line x:Name="PreviewErrorLine2"
+                                              X1="21" Y1="6" X2="6" Y2="21"
+                                              Stroke="#F56C6C"
+                                              StrokeThickness="1.5"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"/>
+                                    </Grid>
+                                </Grid>
                             </Grid>
 
                             <!-- 矩阵行列 -->
@@ -222,7 +274,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <!-- 新增：结果图片总像素信息 -->
+                                <!-- 结果图片总像素信息 -->
                                 <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                                     <TextBlock Text="总像素（Total Pixels）：" FontSize="12" Foreground="#909399"/>
                                     <TextBlock x:Name="LblTargetTotalPixels" Text="--" FontSize="12" Foreground="#909399"/>
@@ -235,12 +287,12 @@
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- 最下方靠左：作者与版本信息 -->
+                <!-- 作者与版本信息 -->
                 <TextBlock Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,12,20,0" FontSize="12">
                     <Hyperlink NavigateUri="https://github.com/tpz9911"
                                RequestNavigate="Hyperlink_RequestNavigate"
                                ToolTip="点击访问作者主页">
-                        PZ v1.00.261116
+                        PZ v1.10.261123
                     </Hyperlink>
                 </TextBlock>
             </Grid>

@@ -17,11 +17,24 @@ namespace ImageGridSizeCalculator
     {
         // 仅允许 ASCII 半角数字（排除全角数字等其他 Unicode 数字字符）
         private static readonly Regex NonDigitRegex = new(@"[^0-9]+", RegexOptions.Compiled);
+        private const double PreviewBoxSize = 54.0;
         private readonly string _configFilePath = Path.Combine(AppContext.BaseDirectory, "igsc_config.json");
 
         private long? _currentTargetWidth;
         private long? _currentTargetHeight;
         private DispatcherTimer? _copyHintTimer;
+
+        private double _maxPreviewAspectRatio;
+        private double _copyHintDurationSeconds;
+        private double _standardRatioMaxRelativeError;
+        private double _standardRatioMaxPixelDiff;
+
+        private Brush _previewShapeBrush = Brushes.Transparent;
+        private Brush _previewErrorBrush = Brushes.Transparent;
+        private Brush _grayTextBrush = Brushes.Transparent;
+        private Brush _normalInfoBrush = Brushes.Transparent;
+        private Brush _errorTextBrush = Brushes.Transparent;
+        private Brush _successHintBrush = Brushes.Transparent;
 
         public MainWindow()
         {
@@ -67,6 +80,27 @@ namespace ImageGridSizeCalculator
             ChkEnableBorder.IsChecked = config.EnableBorder;
             TxtBorderWidth.Text = config.BorderWidth ?? defaultConfig.BorderWidth;
             Topmost = config.Topmost;
+
+            // 加载不可持久化的界面与计算参数（以 AppConfig 默认值为准）
+            _maxPreviewAspectRatio = double.IsFinite(defaultConfig.MaxPreviewAspectRatio) && defaultConfig.MaxPreviewAspectRatio > 1.0
+                ? defaultConfig.MaxPreviewAspectRatio
+                : 10.0;
+            _copyHintDurationSeconds = double.IsFinite(defaultConfig.CopyHintDurationSeconds) && defaultConfig.CopyHintDurationSeconds > 0
+                ? defaultConfig.CopyHintDurationSeconds
+                : 1.5;
+            _standardRatioMaxRelativeError = double.IsFinite(defaultConfig.StandardRatioMaxRelativeError) && defaultConfig.StandardRatioMaxRelativeError >= 0
+                ? defaultConfig.StandardRatioMaxRelativeError
+                : 0.001;
+            _standardRatioMaxPixelDiff = double.IsFinite(defaultConfig.StandardRatioMaxPixelDiff) && defaultConfig.StandardRatioMaxPixelDiff >= 0
+                ? defaultConfig.StandardRatioMaxPixelDiff
+                : 1.0;
+
+            _previewShapeBrush = CreateBrushOrDefault(defaultConfig.PreviewShapeColor, "#4CC1D8");
+            _previewErrorBrush = CreateBrushOrDefault(defaultConfig.PreviewErrorColor, "#CCCCCC");
+            _grayTextBrush = CreateBrushOrDefault(defaultConfig.GrayTextColor, "#909399");
+            _normalInfoBrush = CreateBrushOrDefault(defaultConfig.NormalInfoColor, "#606266");
+            _errorTextBrush = CreateBrushOrDefault(defaultConfig.ErrorTextColor, "#F56C6C");
+            _successHintBrush = CreateBrushOrDefault(defaultConfig.SuccessHintColor, "#67C23A");
         }
 
         /// <summary>
@@ -243,7 +277,9 @@ namespace ImageGridSizeCalculator
                 TxtHorizontalSpacing == null || TxtVerticalSpacing == null ||
                 TxtBorderWidth == null || ChkEnableBorder == null ||
                 LblSourceAspectRatio == null || LblSourceStandardRatio == null ||
-                LblSourceTotalPixels == null || LblTargetTotalPixels == null)
+                LblSourceTotalPixels == null || LblTargetTotalPixels == null ||
+                PreviewAspectRect == null || PreviewErrorShape == null ||
+                PreviewErrorCircle == null || PreviewErrorLine1 == null || PreviewErrorLine2 == null)
             {
                 return;
             }
@@ -267,34 +303,37 @@ namespace ImageGridSizeCalculator
             if ((!isSourceWidthEmpty && !isSourceWidthValid) || (!isSourceHeightEmpty && !isSourceHeightValid))
             {
                 // 存在不合法输入 -> 红色 ERR
-                SetInfoText(LblSourceAspectRatio, "ERR", ErrorTextBrush);
-                SetInfoText(LblSourceStandardRatio, "ERR", ErrorTextBrush);
-                SetInfoText(LblSourceTotalPixels, "ERR", ErrorTextBrush);
+                SetInfoText(LblSourceAspectRatio, "ERR", _errorTextBrush);
+                SetInfoText(LblSourceStandardRatio, "ERR", _errorTextBrush);
+                SetInfoText(LblSourceTotalPixels, "ERR", _errorTextBrush);
+                UpdateSourceAspectPreview(isValid: false, aspectRatio: 0);
             }
             else if (isSourceWidthEmpty || isSourceHeightEmpty)
             {
                 // 宽或高空缺 -> 灰色 --
-                SetInfoText(LblSourceAspectRatio, "--", GrayTextBrush);
-                SetInfoText(LblSourceStandardRatio, "--", GrayTextBrush);
-                SetInfoText(LblSourceTotalPixels, "--", GrayTextBrush);
+                SetInfoText(LblSourceAspectRatio, "--", _grayTextBrush);
+                SetInfoText(LblSourceStandardRatio, "--", _grayTextBrush);
+                SetInfoText(LblSourceTotalPixels, "--", _grayTextBrush);
+                UpdateSourceAspectPreview(isValid: false, aspectRatio: 0);
             }
             else
             {
                 double aspectRatio = (double)sourceWidth / sourceHeight;
-                SetInfoText(LblSourceAspectRatio, aspectRatio.ToString("F4"), NormalInfoBrush);
+                SetInfoText(LblSourceAspectRatio, aspectRatio.ToString("F4"), _normalInfoBrush);
 
                 string? matchedRatioText = MatchStandardAspectRatio(sourceWidth, sourceHeight, aspectRatio);
                 if (matchedRatioText != null)
                 {
-                    SetInfoText(LblSourceStandardRatio, matchedRatioText, NormalInfoBrush);
+                    SetInfoText(LblSourceStandardRatio, matchedRatioText, _normalInfoBrush);
                 }
                 else
                 {
-                    SetInfoText(LblSourceStandardRatio, "--", GrayTextBrush);
+                    SetInfoText(LblSourceStandardRatio, "--", _grayTextBrush);
                 }
 
                 double sourceMegapixels = (double)sourceWidth * sourceHeight / 1_000_000.0;
-                SetInfoText(LblSourceTotalPixels, sourceMegapixels.ToString("F3"), NormalInfoBrush);
+                SetInfoText(LblSourceTotalPixels, sourceMegapixels.ToString("F3"), _normalInfoBrush);
+                UpdateSourceAspectPreview(isValid: true, aspectRatio: aspectRatio);
             }
 
             // 2. 校验其余网格与边框参数
@@ -374,7 +413,43 @@ namespace ImageGridSizeCalculator
             LblTargetHeight.Text = $"{targetHeight:N0} px";
 
             double targetMegapixels = (double)targetWidth * targetHeight / 1_000_000.0;
-            SetInfoText(LblTargetTotalPixels, targetMegapixels.ToString("F3"), NormalInfoBrush);
+            SetInfoText(LblTargetTotalPixels, targetMegapixels.ToString("F3"), _normalInfoBrush);
+        }
+
+        /// <summary>
+        /// 根据素材宽高比实时更新右列 1:1 框内的矢量比例示意图。
+        /// </summary>
+        private void UpdateSourceAspectPreview(bool isValid, double aspectRatio)
+        {
+            if (!isValid || !double.IsFinite(aspectRatio) || aspectRatio <= 0 ||
+                aspectRatio > _maxPreviewAspectRatio || aspectRatio < 1.0 / _maxPreviewAspectRatio)
+            {
+                PreviewErrorCircle.Stroke = _previewErrorBrush;
+                PreviewErrorLine1.Stroke = _previewErrorBrush;
+                PreviewErrorLine2.Stroke = _previewErrorBrush;
+                PreviewAspectRect.Visibility = Visibility.Collapsed;
+                PreviewErrorShape.Visibility = Visibility.Visible;
+                return;
+            }
+
+            double rectWidth;
+            double rectHeight;
+            if (aspectRatio >= 1.0)
+            {
+                rectWidth = PreviewBoxSize;
+                rectHeight = PreviewBoxSize / aspectRatio;
+            }
+            else
+            {
+                rectHeight = PreviewBoxSize;
+                rectWidth = PreviewBoxSize * aspectRatio;
+            }
+
+            PreviewAspectRect.Width = rectWidth;
+            PreviewAspectRect.Height = rectHeight;
+            PreviewAspectRect.Stroke = _previewShapeBrush;
+            PreviewAspectRect.Visibility = Visibility.Visible;
+            PreviewErrorShape.Visibility = Visibility.Collapsed;
         }
 
         private void ResetTargetResult(bool showError, string statusMessage)
@@ -386,11 +461,11 @@ namespace ImageGridSizeCalculator
 
             if (showError)
             {
-                SetInfoText(LblTargetTotalPixels, "ERR", ErrorTextBrush);
+                SetInfoText(LblTargetTotalPixels, "ERR", _errorTextBrush);
             }
             else
             {
-                SetInfoText(LblTargetTotalPixels, "--", GrayTextBrush);
+                SetInfoText(LblTargetTotalPixels, "--", _grayTextBrush);
             }
 
             LblStatus.Text = statusMessage;
@@ -400,7 +475,7 @@ namespace ImageGridSizeCalculator
         /// <summary>
         /// 匹配最接近的常见标准宽高比并计算像素误差。
         /// </summary>
-        private static string? MatchStandardAspectRatio(int width, int height, double aspectRatio)
+        private string? MatchStandardAspectRatio(int width, int height, double aspectRatio)
         {
             StandardAspectRatio bestMatch = StandardAspectRatios[0];
             double minRatioDiff = double.MaxValue;
@@ -419,8 +494,7 @@ namespace ImageGridSizeCalculator
             double absHeightDiff = Math.Abs(height - expectedHeight);
             double relativeError = absHeightDiff / expectedHeight;
 
-            // 相对误差 <= 0.1% 或 绝对差值 <= 1 px
-            if (relativeError > 0.001 && absHeightDiff > 1.0)
+            if (relativeError > _standardRatioMaxRelativeError && absHeightDiff > _standardRatioMaxPixelDiff)
             {
                 return null;
             }
@@ -490,19 +564,19 @@ namespace ImageGridSizeCalculator
         private void ShowCopySuccessHint(string copiedText)
         {
             LblCopyHint.Text = $"✓ {copiedText}";
-            LblCopyHint.Foreground = SuccessHintBrush;
+            LblCopyHint.Foreground = _successHintBrush;
 
             if (_copyHintTimer == null)
             {
                 _copyHintTimer = new DispatcherTimer
                 {
-                    Interval = TimeSpan.FromSeconds(1.5)
+                    Interval = TimeSpan.FromSeconds(_copyHintDurationSeconds)
                 };
                 _copyHintTimer.Tick += (_, _) =>
                 {
                     _copyHintTimer.Stop();
                     LblCopyHint.Text = "点击数值可复制 (Click to Copy)";
-                    LblCopyHint.Foreground = GrayTextBrush;
+                    LblCopyHint.Foreground = _grayTextBrush;
                 };
             }
             else
@@ -557,6 +631,21 @@ namespace ImageGridSizeCalculator
         ];
 
         /// <summary>
+        /// 创建并冻结不可变画刷；若颜色格式无效，则回退至兜底颜色。
+        /// </summary>
+        private static Brush CreateBrushOrDefault(string? colorText, string fallbackHexColor)
+        {
+            if (!string.IsNullOrWhiteSpace(colorText) &&
+                TryCreateFrozenBrush(colorText.Trim(), out Brush? customBrush) &&
+                customBrush != null)
+            {
+                return customBrush;
+            }
+
+            return CreateFrozenBrush(fallbackHexColor);
+        }
+
+        /// <summary>
         /// 创建并冻结不可变画刷，减少 UI 渲染与内存分配开销。
         /// </summary>
         private static SolidColorBrush CreateFrozenBrush(string hexColor)
@@ -566,9 +655,29 @@ namespace ImageGridSizeCalculator
             return brush;
         }
 
-        private static readonly Brush GrayTextBrush = CreateFrozenBrush("#909399");
-        private static readonly Brush NormalInfoBrush = CreateFrozenBrush("#606266");
-        private static readonly Brush ErrorTextBrush = CreateFrozenBrush("#F56C6C");
-        private static readonly Brush SuccessHintBrush = CreateFrozenBrush("#67C23A");
+        /// <summary>
+        /// 尝试解析颜色字符串并创建冻结画刷，解析失败时返回 false。
+        /// </summary>
+        private static bool TryCreateFrozenBrush(string colorText, out Brush? brush)
+        {
+            try
+            {
+                var parsed = ColorConverter.ConvertFromString(colorText);
+                if (parsed is Color color)
+                {
+                    var solidBrush = new SolidColorBrush(color);
+                    solidBrush.Freeze();
+                    brush = solidBrush;
+                    return true;
+                }
+            }
+            catch
+            {
+                // 颜色格式无效时交由调用方回退默认值
+            }
+
+            brush = null;
+            return false;
+        }
     }
 }
